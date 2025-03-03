@@ -57,6 +57,7 @@ public:
   bool operator!=(const char* p) const { return !operator==(p); }
   bool operator!=(const Str<SIZE>& rhs) const { return !operator==(rhs.s); }
 
+  // 64 bits a batch
   static bool genericEQ(const char* p1, const char* p2, size_t len) {
     while (len >= 8) {
       if (*(uint64_t*)p1 != *(uint64_t*)p2) return false;
@@ -89,11 +90,15 @@ public:
   bool operator<(const char* p2) const { return compare(p2) < 0; }
   bool operator<(const Str<SIZE>& rhs) const { return compare(rhs.s) < 0; }
 
+  // 64 bits a batch
   static int genericCompare(const char* p1, const char* p2, size_t len) {
     while (len >= 8) {
       uint64_t mask = *(uint64_t*)p1 ^ *(uint64_t*)p2;
       if (mask) {
+        // not equal
         int i = __builtin_ctzll(mask) >> 3;
+        // __builtin_ctzll will get the position of the lowest 1
+        // And by shifting 3 we get the first non-equal byte
         return (int)(uint8_t)p1[i] - (int)(uint8_t)p2[i];
       }
       p1 += 8;
@@ -112,8 +117,11 @@ public:
 #endif
 
 #if defined(__AVX512VL__) && defined(__AVX512BW__)
+  // 512 bits a batch
   static bool simdEQ(const char* p1, const char* p2, size_t len) {
     while (len >= 64) {
+      // _mm512_cmpneq_epu8_mask will compare the 512bits in 8bits batch size
+      // and store the result in a 64bits mask
       uint64_t mask = _mm512_cmpneq_epu8_mask(_mm512_loadu_si512(p1), _mm512_loadu_si512(p2));
       if (mask) return false;
       p1 += 64;
@@ -143,6 +151,8 @@ public:
       uint64_t mask = _mm512_cmpneq_epu8_mask(_mm512_loadu_si512(p1), _mm512_loadu_si512(p2));
       if (mask) {
         int i = __builtin_ctzll(mask);
+        // no need to >> 3 here because the one bit in the mask already represents 
+        // a byte in the original 512 bits.
         return (int)(uint8_t)p1[i] - (int)(uint8_t)p2[i];
       }
       p1 += 64;
@@ -245,6 +255,16 @@ public:
     return _mm_cvtsi128_si32(t4);
   }
 
+  /*
+  Example : p -> ['1', '2', '3', '4', '5', '6', '7', '8', ...] (8 bit)
+  in = [1, 2, 3, 4, 5, 6, 7, 8, ...] (8 bit)
+  t1 = [12, 34, 56, 78, ...] (16 bit)
+  t2 = [1234, 5678, ...] (32 bit)
+  t3 = [1234, 5678, ..., ..., 1234, 5678, ..., ...] (16 bit)
+  t4 = [12345678, ...] (32 bit)
+  result = 12345678
+  */
+
   // covert 16 digits into int64
   static uint64_t simdtoi64(const char* p) {
     __m128i ascii0 = _mm_set1_epi8('0');
@@ -264,11 +284,15 @@ public:
 
   template<typename T>
   void fromi(T num) {
+    // specialize the last byte if Size is odd
     if (Size & 1) {
       s[Size - 1] = '0' + (num % 10);
       num /= 10;
     }
+    // Size & -2 will adjust Size to the closest even number
     switch (Size & -2) {
+      // Set the results, two digits a batch
+      // Notice: the cases fall through
       case 18: *(uint16_t*)(s + 16) = *(uint16_t*)(digit_pairs + ((num % 100) << 1)); num /= 100;
       case 16: *(uint16_t*)(s + 14) = *(uint16_t*)(digit_pairs + ((num % 100) << 1)); num /= 100;
       case 14: *(uint16_t*)(s + 12) = *(uint16_t*)(digit_pairs + ((num % 100) << 1)); num /= 100;
@@ -281,6 +305,7 @@ public:
     }
   }
 
+  // This is really smart: Store the result in a string literal, two digits as one batch
   static constexpr const char* digit_pairs = "00010203040506070809"
                                              "10111213141516171819"
                                              "20212223242526272829"
